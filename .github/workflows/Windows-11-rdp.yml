@@ -1,0 +1,106 @@
+
+name: Windows 11 RDP - DESKTOP-RUNNER11
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows11-rdp:
+    runs-on: windows-11-arm
+    timeout-minutes: 350
+
+    steps:
+      - name: Configure Windows 11 RDP
+        shell: powershell
+        run: |
+          Write-Host "Configuring DESKTOP-RUNNER11"
+
+          # Enable Remote Desktop
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" -Value 0
+
+          # Enable Network Level Authentication
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" -Value 1
+
+          # Enable Windows Firewall RDP rules
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          # Restrict RDP to Tailscale network
+          New-NetFirewallRule `
+            -DisplayName "RDP Tailscale Only" `
+            -Direction Inbound `
+            -Protocol TCP `
+            -LocalPort 3389 `
+            -RemoteAddress 100.64.0.0/10 `
+            -Action Allow `
+            -Profile Any
+
+          # Create three accounts
+          $accounts = @(
+            @{Name="Xarimo"; Password=$env:XARIMO_PASSWORD},
+            @{Name="runneradmin"; Password=$env:RUNNER_PASSWORD},
+            @{Name="Installernational"; Password=$env:INSTALLER_PASSWORD}
+          )
+
+          $rdpGroup = (Get-LocalGroup -SID "S-1-5-32-555").Name
+
+          foreach ($account in $accounts) {
+            if ([string]::IsNullOrWhiteSpace($account.Password)) {
+              throw "Missing password secret for $($account.Name)"
+            }
+
+            $securePassword = ConvertTo-SecureString `
+              $account.Password -AsPlainText -Force
+
+            if (Get-LocalUser -Name $account.Name -ErrorAction SilentlyContinue) {
+              Set-LocalUser -Name $account.Name -Password $securePassword
+            } else {
+              New-LocalUser `
+                -Name $account.Name `
+                -Password $securePassword `
+                -PasswordNeverExpires
+            }
+
+            Add-LocalGroupMember `
+              -Group $rdpGroup `
+              -Member $account.Name `
+              -ErrorAction SilentlyContinue
+          }
+
+          Write-Host "Three RDP accounts configured."
+
+      - name: Connect Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Show RDP Connection
+        shell: powershell
+        run: |
+          Write-Host "=================================="
+          Write-Host "DEVICE: DESKTOP-RUNNER11"
+          Write-Host "RDP PORT: 3389"
+          Write-Host "=================================="
+
+          $ip = tailscale ip -4
+          Write-Host "TAILSCALE IP: $ip"
+          Write-Host "RDP ADDRESS: ${ip}:3389"
+
+          Write-Host "Accounts:"
+          Write-Host "Xarimo"
+          Write-Host "runneradmin"
+          Write-Host "Installernational"
+
+      - name: Keep RDP Online
+        shell: powershell
+        run: |
+          Write-Host "RDP SERVER ONLINE"
+          while ($true) {
+            Start-Sleep -Seconds 60
+          }
+        
