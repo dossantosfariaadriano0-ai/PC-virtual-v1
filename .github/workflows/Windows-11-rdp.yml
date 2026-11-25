@@ -1,5 +1,5 @@
 
-name: DESKTOP-RUNNER11 - Windows 11 RDP
+name: DESKTOP-RUNNER11 Windows 11 RDP
 
 on:
   workflow_dispatch:
@@ -9,9 +9,9 @@ permissions:
 
 jobs:
   windows11:
-    name: Start Windows 11 RDP
+    name: Start Windows 11 ARM64
     runs-on: windows-11-arm
-    timeout-minutes: 360
+    timeout-minutes: 350
 
     steps:
       - name: Connect Tailscale
@@ -21,16 +21,25 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      - name: Configure Windows RDP and Accounts
+      - name: Configure Tailscale Device
         shell: powershell
-        env:
-          P_XARIMO: ${{ secrets.XARIMO_PASSWORD }}
-          P_RUNNER: ${{ secrets.RUNNER_PASSWORD }}
-          P_INSTALLER: ${{ secrets.INSTALLER_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "Configuring DESKTOP-RUNNER11"
+          tailscale set --hostname=DESKTOP-RUNNER11
+
+          Write-Host "Tailscale device configured."
+
+      - name: Configure Windows 11 RDP
+        shell: powershell
+        env:
+          XARIMO_PASSWORD: ${{ secrets.XARIMO_PASSWORD }}
+          RUNNER_PASSWORD: ${{ secrets.RUNNER_PASSWORD }}
+          INSTALLER_PASSWORD: ${{ secrets.INSTALLER_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Configuring Windows 11 RDP..."
 
           # Enable Remote Desktop
           Set-ItemProperty `
@@ -41,10 +50,7 @@ jobs:
             -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
             -Name "UserAuthentication" -Value 1
 
-          Set-Service -Name TermService -StartupType Manual
-          Start-Service -Name TermService
-
-          # Restrict RDP firewall access to Tailscale
+          # Restrict firewall to Tailscale
           Get-NetFirewallRule -DisplayGroup "Remote Desktop" |
             Disable-NetFirewallRule
 
@@ -57,18 +63,23 @@ jobs:
             -Action Allow `
             -Profile Any
 
-          # Create accounts
+          # Enable RDP service
+          Set-Service -Name TermService -StartupType Manual
+          Start-Service -Name TermService
+
+          # Create user accounts
           $accounts = @(
-            @{Name="Xarimo"; Password=$env:P_XARIMO},
-            @{Name="runneradmin"; Password=$env:P_RUNNER},
-            @{Name="Installernational"; Password=$env:P_INSTALLER}
+            @{Name="Xarimo"; Password=$env:XARIMO_PASSWORD},
+            @{Name="runneradmin"; Password=$env:RUNNER_PASSWORD},
+            @{Name="Installernational"; Password=$env:INSTALLER_PASSWORD}
           )
 
           $group = Get-LocalGroup -SID "S-1-5-32-555"
 
           foreach ($account in $accounts) {
+
             if ([string]::IsNullOrWhiteSpace($account.Password)) {
-              throw "Missing password secret: $($account.Name)"
+              throw "Missing password for $($account.Name)"
             }
 
             $secure = ConvertTo-SecureString `
@@ -83,9 +94,7 @@ jobs:
                 -Password $secure `
                 -PasswordNeverExpires
             } else {
-              Set-LocalUser `
-                -Name $account.Name `
-                -Password $secure
+              Set-LocalUser -Name $account.Name -Password $secure
             }
 
             Add-LocalGroupMember `
@@ -93,26 +102,28 @@ jobs:
               -Member $account.Name `
               -ErrorAction SilentlyContinue
 
-            Write-Host "Account configured: $($account.Name)"
+            Write-Host "Configured: $($account.Name)"
           }
 
-          Write-Host "RDP configuration completed."
+          Write-Host "RDP READY"
 
-      - name: Display Connection Information
+      - name: Show Windows 11 Address
         shell: powershell
         run: |
           $ip = (tailscale ip -4 | Select-Object -First 1).Trim()
 
-          Write-Host "================================"
-          Write-Host "DEVICE: DESKTOP-RUNNER11"
-          Write-Host "SYSTEM: Windows 11 ARM64"
-          Write-Host "RDP: $ip`:3389"
-          Write-Host "ACCOUNT 1: Xarimo"
-          Write-Host "ACCOUNT 2: runneradmin"
-          Write-Host "ACCOUNT 3: Installernational"
-          Write-Host "================================"
+          if (-not $ip) {
+            throw "Tailscale IP not found."
+          }
 
-      - name: Keep Server Running
+          Write-Host "================================="
+          Write-Host "DEVICE: DESKTOP-RUNNER11"
+          Write-Host "SYSTEM: WINDOWS 11 ARM64"
+          Write-Host "RDP ADDRESS: ${ip}:3389"
+          Write-Host "USERNAME: Xarimo"
+          Write-Host "================================="
+
+      - name: Keep Windows 11 Online
         shell: powershell
         run: |
           Write-Host "DESKTOP-RUNNER11 ONLINE"
